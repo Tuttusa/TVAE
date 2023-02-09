@@ -1,0 +1,399 @@
+import json
+
+import numpy as np
+import hashlib
+
+from fastai.callback.schedule import combine_scheds, SchedCos, SchedNo, ParamScheduler
+from fastai.data.block import TransformBlock
+from fastai.data.transforms import Normalize, RandomSplitter
+from fastai.imports import noops
+from fastai.layers import Swish, LinBnDrop, SigmoidRange
+from fastai.optimizer import ranger
+from fastai.tabular.core import TabularPandas, TabDataLoader, Categorify, FillMissing, TabularProc
+from fastai.tabular.learner import TabularLearner
+from fastai.tabular.model import get_emb_sz, TabularModel
+from fastai.torch_core import tensor, to_device, Module
+from fastcore.basics import store_attr
+from fastcore.foundation import L
+from fastcore.meta import delegates
+from fastcore.transform import ItemTransform
+import torch
+import pandas as pd
+from torch import nn, HalfTensor
+import torch.nn.functional as F
+from sklearn.metrics import accuracy_score
+from sklearn.metrics import precision_score, recall_score, f1_score
+from torch.distributions import Normal
+
+from tvae.loss import VAERecreatedLoss, AnnealedLossCallback
+from tvae.metrics import CEMetric, KLDMetric, MUMetric, StdMetric, MSEMetric, mean_absolute_relative_error
+from tvae.paths import models_path
+
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+pd.set_option('display.float_format', lambda x: '%.3f' % x)
+
+
+class ReadTabBatchIdentity(ItemTransform):
+    "Read a batch of data and return the inputs as both `x` and `y`"
+
+    def __init__(self, to):
+        super().__init__()
+        store_attr()
+
+    def encodes(self, to):
+        if not to.with_cont:
+            res = (tensor(to.cats).long(),) + (tensor(to.cats).long(),)
+        else:
+            res = (tensor(to.cats).long(), tensor(to.conts).float()) + (
+                tensor(to.cats).long(), tensor(to.conts).float())
+        if to.device is not None:
+            res = to_device(res, to.device)
+        return res
+
+
+class TabularPandasIdentity(TabularPandas):
+
+    @property
+    def total_cats(self):
+        return {k: len(v) for k, v in self.classes.items()}
+
+    @property
+    def low(self):
+        return (self.cont_min - np.array(list(self.means.values()))) / np.array(list(self.stds.values()))
+
+    @property
+    def high(self):
+        return (self.cont_max - np.array(list(self.means.values()))) / np.array(list(self.stds.values()))
+
+
+@delegates()
+class TabDataLoaderIdentity(TabDataLoader):
+    "A transformed `DataLoader` for AutoEncoder problems with Tabular data"
+    do_item = noops
+
+    def __init__(self, dataset, bs=16, shuffle=False, after_batch=None, num_workers=0, **kwargs):
+        if after_batch is None:
+            after_batch = L(TransformBlock().batch_tfms) + ReadTabBatchIdentity(dataset)
+        super().__init__(dataset, bs=bs, shuffle=shuffle, after_batch=after_batch, num_workers=num_workers, **kwargs)
+
+    def create_batch(self, b): return self.dataset.iloc[b]
+
+    def do_item(self, s): return 0 if s is None else s
+
+
+TabularPandasIdentity._dl_type = TabDataLoaderIdentity
+
+
+class SetMinMax(TabularProc):
+
+    def encodes(self, to):
+        to.cont_min = to[to.cont_names].min().values
+        to.cont_max = to[to.cont_names].max().values
+
+
+class BatchSwapNoise(Module):
+    "Swap Noise Module"
+
+    def __init__(self, p):
+        super().__init__()
+        store_attr()
+
+    def forward(self, x):
+        if self.training:
+            mask = torch.rand(x.size()) > (1 - self.p)
+            l1 = torch.floor(torch.rand(x.size()) * x.size(0)).type(torch.LongTensor)
+            l2 = (mask.type(torch.LongTensor) * x.size(1))
+            res = (l1 * l2).view(-1)
+            idx = torch.arange(x.nelement()) + res
+            idx[idx >= x.nelement()] = idx[idx >= x.nelement()] - x.nelement()
+            return x.flatten()[idx].view(x.size())
+        else:
+            return x
+
+
+class TabularVAE(TabularModel):
+    def __init__(self, emb_szs, n_cont, hidden_size, cats, low, high, layers=[1024, 512, 256], ps=0.2,
+                 embed_p=0.01, bswap=None, act_cls=Swish()):
+        super().__init__(emb_szs, n_cont, layers=layers, out_sz=hidden_size, embed_p=embed_p, act_cls=act_cls)
+
+        self.bswap = bswap
+        self.cats = cats
+        self.activation_cats = sum([v for k, v in cats.items()])
+
+        self.layers = nn.Sequential(
+            *L(self.layers.children())[:-1] + nn.Sequential(LinBnDrop(256, hidden_size, p=ps, act=act_cls)))
+
+        self.fc_mu = nn.Linear(hidden_size, hidden_size)
+        self.fc_std = nn.Linear(hidden_size, hidden_size)
+
+        if self.bswap != None: self.noise = BatchSwapNoise(self.bswap)
+        self.decoder = nn.Sequential(
+            LinBnDrop(hidden_size, 256, p=ps, act=act_cls),
+            LinBnDrop(256, 512, p=ps, act=act_cls),
+            LinBnDrop(512, 1024, p=ps, act=act_cls)
+        )
+
+        self.decoder_cont = nn.Sequential(
+            LinBnDrop(1024, n_cont, p=ps, bn=False, act=None),
+            SigmoidRange(low=low, high=high)
+        )
+
+        self.decoder_cat = LinBnDrop(1024, self.activation_cats, p=ps, bn=False, act=None)
+
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    def reparameterize(self, mu, logvar):
+        std = logvar.mul(0.5).exp_()
+        esp = HalfTensor(*mu.size()).normal_().to(self.device)
+        z = mu + std * esp
+        return z
+
+    def bottleneck(self, h):
+        mu, logvar = self.fc_mu(h), F.softplus(self.fc_std(h))
+        z = self.reparameterize(mu, logvar)
+        return z, mu, logvar
+
+    def encode(self, x_cat, x_cont=None):
+        encoded = super().forward(x_cat, x_cont)
+        z, mu, logvar = self.bottleneck(encoded)
+
+        return z, mu, logvar
+
+    def decode(self, z):
+        decoded_trunk = self.decoder(z)
+
+        decoded_cats = self.decoder_cat(decoded_trunk)
+
+        decoded_conts = self.decoder_cont(decoded_trunk)
+
+        return decoded_cats, decoded_conts
+
+    def forward(self, x_cat, x_cont=None, encode=False):
+        if (self.bswap != None):
+            x_cat = self.noise(x_cat)
+            x_cont = self.noise(x_cont)
+
+        z, mu, logvar = self.encode(x_cat, x_cont)
+        if (encode): return z
+
+        decoded_cats, decoded_conts = self.decode(z)
+
+        return decoded_cats, decoded_conts, mu, logvar
+
+
+class TVAE:
+    def __init__(self, config, df, cat_names, cont_names):
+
+        self.config = config
+        self.cat_names = cat_names
+        self.cont_names = cont_names
+        self.df = df
+
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+        f = combine_scheds([.1, .3, .6], [SchedCos(0, 0), SchedCos(0, 1), SchedNo(1, 1)])
+
+        cbs = [ParamScheduler({'kl_weight': f}), AnnealedLossCallback()]
+
+        to = TabularPandasIdentity(df, [Categorify, FillMissing, Normalize, SetMinMax], cat_names, cont_names,
+                                   splits=RandomSplitter(seed=32)(df))
+
+        metrics = [MSEMetric(), CEMetric(to.total_cats), KLDMetric(), MUMetric(), StdMetric()]
+
+        dls = to.dataloaders(bs=config['batch_size'])
+        dls.n_inp = 2
+
+        model = TabularVAE(get_emb_sz(to.train), len(cont_names), config['hidden_size'], ps=config['dropout'],
+                           cats=to.total_cats,
+                           embed_p=config['embed_p'], bswap=config['bswap'], low=tensor(to.low, device=device),
+                           high=tensor(to.high, device=device))
+
+        model.to(device)
+        loss_func = VAERecreatedLoss(to.total_cats, df.shape[0], config['batch_size'], to.total_cats)
+        learn = TabularLearner(dls, model, lr=config['lr'], loss_func=loss_func, wd=config['wd'], opt_func=ranger,
+                               cbs=cbs,
+                               metrics=metrics).to_fp16()
+
+        self.learn = learn
+        self.to = to
+
+        self.model_name = hashlib.sha256(json.dumps(self.config).encode('utf-8')).hexdigest()
+
+        self.model_path = models_path.joinpath('model_vae_x').as_posix()
+
+    def train(self):
+        self.learn.fit_flat_cos(self.config['epochs'], lr=self.config['lr'])
+
+    def _to_continuous_dataframe(self, cont_preds):
+        if isinstance(cont_preds, torch.Tensor):
+            cont_preds = cont_preds.cpu().numpy()
+        return pd.DataFrame(
+            (cont_preds * np.array(list(self.to.stds.values()))) + np.array(list(self.to.means.values())),
+            columns=self.to.cont_names)
+
+    def _to_cat_dataframe(self, cat_preds):
+        cat_reduced = np.zeros((cat_preds.shape[0], len(self.to.total_cats)))
+        pos = 0
+        for i, (k, v) in enumerate(self.to.total_cats.items()):
+            cat_reduced[:, i] = cat_preds[:, pos:pos + v].argmax(axis=1)
+            pos += v
+        cat_reduced = pd.DataFrame(cat_reduced, columns=self.to.cat_names)
+        return cat_reduced
+
+    def _new_unique_rows_generated(self, synth_df, real_df, categ_cols):
+        uniq_synth = synth_df[categ_cols].drop_duplicates()
+        uniq_real = real_df[categ_cols].drop_duplicates()
+        new_uniq = pd.concat([uniq_real, uniq_synth], axis=0).drop_duplicates()
+
+        new_vals_uniq = (new_uniq.shape[0] - uniq_real.shape[0]) / uniq_real.shape[0]
+
+        return new_vals_uniq
+
+    def _continuous_performance(self, cont_preds, cont_targs, vae_uncert=None):
+        """
+        evaluate the performance on continuous columns
+        """
+        cont_preds = pd.DataFrame(cont_preds, columns=self.to.cont_names)
+        cont_targs = pd.DataFrame(cont_targs, columns=self.to.cont_names)
+
+        # preds = pd.DataFrame((cont_preds.values * stds.values) + means.values, columns=cont_preds.columns)
+        preds = self._to_continuous_dataframe(cont_preds)
+        targets = self._to_continuous_dataframe(cont_targs)
+
+        mi = (np.abs(targets - preds)).min().to_frame().T
+        ma = (np.abs(targets - preds)).max().to_frame().T
+        mean = (np.abs(targets - preds)).mean().to_frame().T
+        median = (np.abs(targets - preds)).median().to_frame().T
+        r2 = pd.DataFrame.from_dict({c: [r2_score(targets[c], preds[c])] for c in preds.columns})
+        mape = pd.DataFrame.from_dict({c: [mean_absolute_relative_error(targets[c], preds[c])] for c in preds.columns})
+
+        r2.mean(axis=1)
+
+        for d, name in zip([mi, ma, mean, median, r2, mape], ['Min', 'Max', 'Mean', 'Median', 'R2', 'MARE']):
+            d = d.insert(0, 'GroupBy', name)
+
+        data = pd.concat([mi, ma, mean, median, r2, mape])
+
+        return data
+
+    def _categorical_performance(self, cat_targs, cat_preds, vae_uncert=None):
+        """
+        evaluate the performance on categorical columns
+        """
+        cat_preds = self._to_cat_dataframe(cat_preds)
+
+        cat_targs = pd.DataFrame(cat_targs, columns=self.to.cat_names)
+
+        accuracy = pd.DataFrame.from_dict({c: [accuracy_score(cat_targs[c], cat_preds[c])] for c in cat_preds.columns})
+        recall = pd.DataFrame.from_dict({c: [recall_score(cat_targs[c], cat_preds[c], average='weighted')]
+                                         for c in cat_preds.columns})
+        precision = pd.DataFrame.from_dict(
+            {c: [precision_score(cat_targs[c], cat_preds[c], average='weighted')] for c in cat_preds.columns})
+
+        f1 = pd.DataFrame.from_dict(
+            {c: [f1_score(cat_targs[c], cat_preds[c], average='weighted')] for c in cat_preds.columns})
+
+        for d, name in zip([accuracy, recall, precision, f1], ['Accuracy', 'Recall', 'Precision', 'F1']):
+            d = d.insert(0, 'MetricName', name)
+
+        gg = pd.concat([accuracy, recall, precision, f1])
+
+        return gg
+
+    def _evaluate_recon_pref(self):
+        df_dec, cats, conts, dl, outs_enc = self.reconstruct(self.df)
+
+        conts = self._to_continuous_dataframe(conts)
+        df_d = pd.concat([pd.DataFrame(cats, columns=self.to.cat_names), conts], axis=1)
+        df_dec.columns = list(map(lambda x: f"{x}_rec", df_dec.columns))
+
+        comp_df = pd.concat([df_d, df_dec], axis=1)
+        comp_df_l = sum(list(map(list, zip(df_d.columns.tolist(), df_dec.columns.tolist()))), [])
+        comp_df = comp_df[comp_df_l]
+
+        (cat_preds, cont_preds, mu, logvar), (cat_targs, cont_targs) = self.learn.get_preds(dl=dl)
+
+        cont_perf_data = self._continuous_performance(cont_preds, cont_targs)
+        cat_perf_data = self._categorical_performance(cat_targs, cat_preds)
+
+        return comp_df, cont_perf_data, cat_perf_data
+        # df_dec
+
+    def _evaluate_ood_perf(self, N):
+        rl_df = self._transform(self.df)[0]
+        synth_df = self.generate(N, 0.0, 2.0)[0]
+        new_uniq = self._new_unique_rows_generated(synth_df, rl_df, self.cat_names)
+        return new_uniq
+
+    def evaluate(self, N):
+        pref = self._evaluate_recon_pref()
+        new_uniq = self._evaluate_ood_perf(N)
+        return pref, new_uniq
+
+    def train_and_evaluate(self, N=10000):
+        self.train()
+        return self.evaluate(N)
+
+    def _recon_df(self, cont_preds, cat_preds):
+        cont_df = self._to_continuous_dataframe(cont_preds)
+        cat_df = self._to_cat_dataframe(cat_preds)
+        res = pd.concat([cat_df, cont_df], axis=1)
+        return res
+
+    def _transform(self, df):
+        "reconstruct a dataframe comming from the decoder to a real dataframe"
+        dl = self.learn.dls.test_dl(df)
+        x_cats = torch.cat(list(map(lambda x: x[0], dl)))
+        x_conts = torch.cat(list(map(lambda x: x[1], dl)))
+
+        x_conts = self._to_continuous_dataframe(x_conts)
+        df_d = pd.concat([pd.DataFrame(x_cats, columns=self.to.cat_names), x_conts], axis=1)
+
+        return df_d, x_cats, x_conts
+
+    def encode(self, df):
+        with torch.no_grad():
+            self.learn.model.eval()
+            dl = self.learn.dls.test_dl(df)
+            cats = torch.cat(list(map(lambda x: x[0], dl))).to(self.device)
+            conts = torch.cat(list(map(lambda x: x[1], dl))).to(self.device)
+            outs_enc = self.learn.model.encode(cats, conts)[0].cpu().numpy()
+        return outs_enc, dl, cats, conts
+
+    def decode(self, outs_enc):
+        with torch.no_grad():
+            self.learn.model.eval()
+            if isinstance(outs_enc, np.ndarray):
+                outs_enc = torch.from_numpy(outs_enc).to(self.device)
+            outs_dec_cats, outs_dec_conts = self.learn.model.decode(outs_enc.float())
+            df_dec = self._recon_df(outs_dec_conts.cpu().numpy(), outs_dec_cats.cpu().numpy())
+        return df_dec
+
+    def reconstruct(self, df, transform=True):
+        with torch.no_grad():
+            outs_enc, dl, cats, conts = self.encode(df)
+            df_dec = self.decode(outs_enc)
+            if transform:
+                return self._transform(df_dec)
+
+        return df_dec, cats, conts, dl, outs_enc
+
+    def generate(self, N, mean, std):
+        with torch.no_grad():
+            self.learn.model.eval()
+            outs_enc = torch.normal(mean=mean, std=std, size=(N, self.config['hidden_size'])).to(self.device)
+            outs_dec_cats, outs_dec_conts = self.learn.model.decode(outs_enc)
+            df_dec = self._recon_df(outs_dec_conts.cpu().numpy(), outs_dec_cats.cpu().numpy())
+
+        return df_dec, outs_enc
+
+    def vae_uncert(self, outs_enc):
+        org_gn = torch.exp(Normal(torch.from_numpy(outs_enc.mean(axis=0)),
+                                  torch.from_numpy(outs_enc.std(axis=0))).
+                           log_prob(torch.from_numpy(outs_enc))).sum(axis=1)
+
+        return org_gn
+
+    def save(self):
+        self.learn.save(file=self.model_path)
