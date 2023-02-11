@@ -1,8 +1,13 @@
 import json
+from dataclasses import dataclass, field, asdict
+from typing import List
 
 import numpy as np
 import hashlib
 
+from optuna import Study
+from scipy.stats import entropy
+from sklearn.metrics import r2_score
 from fastai.callback.schedule import combine_scheds, SchedCos, SchedNo, ParamScheduler
 from fastai.data.block import TransformBlock
 from fastai.data.transforms import Normalize, RandomSplitter
@@ -24,6 +29,8 @@ import torch.nn.functional as F
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import precision_score, recall_score, f1_score
 from torch.distributions import Normal
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 from tvae.loss import VAERecreatedLoss, AnnealedLossCallback
 from tvae.metrics import CEMetric, KLDMetric, MUMetric, StdMetric, MSEMetric, mean_absolute_relative_error
@@ -182,10 +189,31 @@ class TabularVAE(TabularModel):
         return decoded_cats, decoded_conts, mu, logvar
 
 
-class TVAE:
-    def __init__(self, config, df, cat_names, cont_names):
+@dataclass
+class VAEConfig:
+    hidden_size: int = 64
+    dropout: float = 0.0
+    embed_p: float = 0.0
+    wd: float = 0.01
+    bswap: float = 0.1
+    lr: float = 4e-3
+    epochs: int = 2
+    batch_size: int = 1024
+    layers: List[int] = field(default_factory=lambda: [1024, 512, 256])
 
-        self.config = config
+    def from_study(self, study: Study, trial_num=0):
+        for k, v in study.best_trials[trial_num].params.items():
+            setattr(self, k, v)
+        return self
+
+    def to_dict(self):
+        return asdict(self)
+
+
+class TVAE:
+    def __init__(self, config: VAEConfig, df: pd.DataFrame, cat_names: List[str], cont_names: List[str]):
+
+        self.config = config.to_dict()
         self.cat_names = cat_names
         self.cont_names = cont_names
         self.df = df
@@ -201,17 +229,17 @@ class TVAE:
 
         metrics = [MSEMetric(), CEMetric(to.total_cats), KLDMetric(), MUMetric(), StdMetric()]
 
-        dls = to.dataloaders(bs=config['batch_size'])
+        dls = to.dataloaders(bs=self.config['batch_size'])
         dls.n_inp = 2
 
-        model = TabularVAE(get_emb_sz(to.train), len(cont_names), config['hidden_size'], ps=config['dropout'],
+        model = TabularVAE(get_emb_sz(to.train), len(cont_names), self.config['hidden_size'], ps=self.config['dropout'],
                            cats=to.total_cats,
-                           embed_p=config['embed_p'], bswap=config['bswap'], low=tensor(to.low, device=device),
+                           embed_p=self.config['embed_p'], bswap=self.config['bswap'], low=tensor(to.low, device=device),
                            high=tensor(to.high, device=device))
 
         model.to(device)
-        loss_func = VAERecreatedLoss(to.total_cats, df.shape[0], config['batch_size'], to.total_cats)
-        learn = TabularLearner(dls, model, lr=config['lr'], loss_func=loss_func, wd=config['wd'], opt_func=ranger,
+        loss_func = VAERecreatedLoss(to.total_cats, df.shape[0], self.config['batch_size'], to.total_cats)
+        learn = TabularLearner(dls, model, lr=self.config['lr'], loss_func=loss_func, wd=self.config['wd'], opt_func=ranger,
                                cbs=cbs,
                                metrics=metrics).to_fp16()
 
@@ -241,23 +269,22 @@ class TVAE:
         cat_reduced = pd.DataFrame(cat_reduced, columns=self.to.cat_names)
         return cat_reduced
 
-    def _new_unique_rows_generated(self, synth_df, real_df, categ_cols):
-        uniq_synth = synth_df[categ_cols].drop_duplicates()
-        uniq_real = real_df[categ_cols].drop_duplicates()
+    def _new_unique_rows_generated(self, synth_df, real_df):
+        uniq_synth = synth_df[self.cat_names].drop_duplicates()
+        uniq_real = real_df[self.cat_names].drop_duplicates()
         new_uniq = pd.concat([uniq_real, uniq_synth], axis=0).drop_duplicates()
 
         new_vals_uniq = (new_uniq.shape[0] - uniq_real.shape[0]) / uniq_real.shape[0]
 
         return new_vals_uniq
 
-    def _continuous_performance(self, cont_preds, cont_targs, vae_uncert=None):
+    def _continuous_performance(self, cont_preds, cont_targs):
         """
         evaluate the performance on continuous columns
         """
         cont_preds = pd.DataFrame(cont_preds, columns=self.to.cont_names)
         cont_targs = pd.DataFrame(cont_targs, columns=self.to.cont_names)
 
-        # preds = pd.DataFrame((cont_preds.values * stds.values) + means.values, columns=cont_preds.columns)
         preds = self._to_continuous_dataframe(cont_preds)
         targets = self._to_continuous_dataframe(cont_targs)
 
@@ -320,16 +347,57 @@ class TVAE:
         return comp_df, cont_perf_data, cat_perf_data
         # df_dec
 
-    def _evaluate_ood_perf(self, N):
-        rl_df = self._transform(self.df)[0]
+    def _analyse_entropy(self, synth_df, real_df):
+        """Checks the entropy of each value of each column"""
+
+        def cols_entropy(df):
+            res_entr = {}
+            res_val_count = {}
+            for col in df.columns:
+                res_val_count[col] = df[col].value_counts() / df[col].shape[0]
+                res_entr[col] = entropy(res_val_count[col])
+            res_entr = pd.DataFrame(res_entr, index=[0])
+            return res_entr, res_val_count
+
+        real_df_entr, real_df_val_c = cols_entropy(real_df[self.cat_names])
+        synth_df_entr, synth_df_val_c = cols_entropy(synth_df[self.cat_names])
+
+        comp_val_c = {}
+        for c, v in real_df_val_c.items():
+            comp_val_c[c] = pd.DataFrame({f"{c}_real": real_df_val_c[c], f"{c}_synth": synth_df_val_c[c]}).fillna(0.0)
+
+        comp_entr = (synth_df_entr - real_df_entr).mean()
+
+        return comp_entr, real_df_entr, synth_df_entr, comp_val_c
+
+    def _get_pvalue_uncertainty(self, org_enc, new_enc, use_encoder=False):
+        if use_encoder:
+            org_enc = self.encode(org_enc)[0]
+            new_enc = self.encode(new_enc)[0]
+
+        org_gn = torch.exp(Normal(torch.from_numpy(org_enc.mean(axis=0)), torch.from_numpy(org_enc.std(axis=0)))
+                           .log_prob(torch.from_numpy(new_enc))).mean(axis=1)
+
+        return org_gn
+
+    def _evaluate_ood_perf(self, N=None):
+        N = self.df.shape[0] if N is None else N
+        real_df = self._transform(self.df)[0]
         synth_df = self.generate(N, 0.0, 2.0)[0]
-        new_uniq = self._new_unique_rows_generated(synth_df, rl_df, self.cat_names)
-        return new_uniq
+        new_uniq = self._new_unique_rows_generated(synth_df, real_df)
+        comp_entr, real_df_entr, synth_df_entr, value_count_comp = self._analyse_entropy(synth_df, real_df)
+
+        t_alea_unc = self._get_pvalue_uncertainty(real_df, synth_df, use_encoder=True)
+        x_alea_unc = self._get_pvalue_uncertainty(real_df, synth_df, use_encoder=True)
+
+        total_alea_unc = (x_alea_unc.numpy(), t_alea_unc.numpy())
+
+        return new_uniq, comp_entr, total_alea_unc, value_count_comp, real_df_entr, synth_df_entr
 
     def evaluate(self, N):
-        pref = self._evaluate_recon_pref()
-        new_uniq = self._evaluate_ood_perf(N)
-        return pref, new_uniq
+        recon_perf = self._evaluate_recon_pref()
+        ood_perf = self._evaluate_ood_perf(N)
+        return recon_perf, ood_perf
 
     def train_and_evaluate(self, N=10000):
         self.train()
@@ -375,7 +443,7 @@ class TVAE:
             outs_enc, dl, cats, conts = self.encode(df)
             df_dec = self.decode(outs_enc)
             if transform:
-                return self._transform(df_dec)
+                df_dec, cats, conts = self._transform(df_dec)
 
         return df_dec, cats, conts, dl, outs_enc
 
@@ -397,3 +465,25 @@ class TVAE:
 
     def save(self):
         self.learn.save(file=self.model_path)
+
+    def make_encoding_distribution_plots(self, N=1000, show=False, legend=False):
+        out_enc = self.encode(self.df.sample(N))[0]
+        outs_enc_df = pd.DataFrame(out_enc, columns=list(range(out_enc.shape[1])))
+
+        g = sns.kdeplot(data=outs_enc_df, legend=legend)
+
+        plt.title(f"Latent dimensions distribution")
+
+        if show:
+            plt.show()
+
+    def compare_synthetic_data_distributions(self, N=10000):
+        all_cols = self.cat_names + self.cont_names
+        real_df = self._transform(self.df)[0]
+        synth_df = self.generate(N, 0.0, 2.0)[0]
+        for scol in all_cols:
+            print(scol)
+            sns.kdeplot(data=real_df[[scol]], palette="crest")
+            sns.kdeplot(data=synth_df[[scol]], palette='rocket')
+            plt.title(f" {scol} distribution")
+            plt.show()
