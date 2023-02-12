@@ -1,6 +1,7 @@
 import json
 from dataclasses import dataclass, field, asdict
 from typing import List
+import uuid
 
 import numpy as np
 import hashlib
@@ -209,14 +210,33 @@ class VAEConfig:
     def to_dict(self):
         return asdict(self)
 
+    def save(self, path):
+        pass
+
+    def load(self, path):
+        pass
+
+@dataclass
+class DataConfig:
+    df: pd.DataFrame = None
+    cat_names: List[str] = None
+    cont_names: List[str] = No
+
+    def save
 
 class TVAE:
-    def __init__(self, config: VAEConfig, df: pd.DataFrame, cat_names: List[str], cont_names: List[str]):
+    def __init__(self, config: VAEConfig, df: pd.DataFrame, cat_names: List[str], cont_names: List[str], name=None):
+
+        self.name = name
 
         self.config = config.to_dict()
         self.cat_names = cat_names
         self.cont_names = cont_names
         self.df = df
+
+        if name is None:
+            self.name = hashlib.sha256(json.dumps(self.config).encode('utf-8')).hexdigest()
+        
 
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -246,9 +266,7 @@ class TVAE:
         self.learn = learn
         self.to = to
 
-        self.model_name = hashlib.sha256(json.dumps(self.config).encode('utf-8')).hexdigest()
-
-        self.model_path = models_path.joinpath('model_vae_x').as_posix()
+        self.model_path = models_path.joinpath(self.name).as_posix()
 
     def train(self):
         self.learn.fit_flat_cos(self.config['epochs'], lr=self.config['lr'])
@@ -465,6 +483,9 @@ class TVAE:
 
     def save(self):
         self.learn.save(file=self.model_path)
+
+    def load(self):
+        self.learn = self.learn.load(self.model_path)
 
     def make_encoding_distribution_plots(self, N=1000, show=False, legend=False):
         out_enc = self.encode(self.df.sample(N))[0]
