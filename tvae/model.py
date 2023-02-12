@@ -234,7 +234,7 @@ class DataConfig(SaveLoadMixin):
 
 
 class TVAE:
-    def __init__(self, config: VAEConfig, data_config: DataConfig, name=None):
+    def __init__(self, config: VAEConfig, data_config: DataConfig, path=None, name=None):
 
         self.name = name
 
@@ -276,8 +276,10 @@ class TVAE:
         self.learn = learn
         self.to = to
         self.reducer = None
-
-        self.model_path = models_path.joinpath(self.name)
+        
+        self.model_path = path
+        if path is None:
+            self.model_path = models_path.joinpath(self.name)
 
     def train(self):
         self.learn.fit_flat_cos(self.config.epochs, lr=self.config.lr)

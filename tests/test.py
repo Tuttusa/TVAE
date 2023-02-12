@@ -58,17 +58,3 @@ tvae = tvae.load()
 xenc = tvae.reduce_embed_dims(x_df, encode=True, num_iter=1)
 
 # %%
-import pacmap
-
-x_reducer = pacmap.PaCMAP(n_components=2, n_neighbors=None, MN_ratio=0.5, FP_ratio=2.0, save_tree=True,
-                          num_iters=1, verbose=True)
-x_reducer.fit(xenc)
-
-# %%%
-
-pacmap.save(x_reducer, 'pacmap.pkl')
-# %%
-x_reducer = pacmap.load('pacmap.pkl')
-# %%
-emb = x_reducer.transform(xenc)
-# %%
