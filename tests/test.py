@@ -1,4 +1,4 @@
-#%%
+# %%
 from fastai.data.external import untar_data, URLs
 import pandas as pd
 
@@ -33,29 +33,38 @@ def adult_dataset():
 
 t_df, t_cat_cols, t_cont_cols, x_df, x_cat_cols, x_cont_cols, df, cat_names, cont_names, all_cols = adult_dataset()
 
-#%%
-from tvae.model import TVAE, VAEConfig
+# %%
+from tvae.model import TVAE, VAEConfig, DataConfig
 
 config = VAEConfig()
 
-#%%
-
-tvae = TVAE(config=config, df=x_df, cat_names=x_cat_cols, cont_names=x_cont_cols)
-
-#%%
-
-recon_perf, ood_perf = tvae.train_and_evaluate(N=10000)
 # %%
 
-xenc = tvae.encode(x_df)[0]
+tvae = TVAE(config=config, data_config=DataConfig(df=x_df, cat_names=x_cat_cols, cont_names=x_cont_cols))
+
+# %%
+
+recon_perf, ood_perf = tvae.train_and_evaluate(N=10000)
+
+# %%
+tvae.save()
+
+# %%
+
+tvae = tvae.load()
+
+# %%
+
+xenc = tvae.reduce_embed_dims(x_df, encode=True, num_iter=1)
+
 # %%
 import pacmap
 
 x_reducer = pacmap.PaCMAP(n_components=2, n_neighbors=None, MN_ratio=0.5, FP_ratio=2.0, save_tree=True,
-                              num_iters=1, verbose=True)
+                          num_iters=1, verbose=True)
 x_reducer.fit(xenc)
 
-#%%%
+# %%%
 
 pacmap.save(x_reducer, 'pacmap.pkl')
 # %%

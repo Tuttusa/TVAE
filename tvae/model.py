@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass, field, asdict
 from typing import List
 import uuid
+import pacmap
 
 import numpy as np
 import hashlib
@@ -32,6 +33,7 @@ from sklearn.metrics import precision_score, recall_score, f1_score
 from torch.distributions import Normal
 import seaborn as sns
 import matplotlib.pyplot as plt
+import pickle
 
 from tvae.loss import VAERecreatedLoss, AnnealedLossCallback
 from tvae.metrics import CEMetric, KLDMetric, MUMetric, StdMetric, MSEMetric, mean_absolute_relative_error
@@ -190,8 +192,21 @@ class TabularVAE(TabularModel):
         return decoded_cats, decoded_conts, mu, logvar
 
 
+class SaveLoadMixin:
+
+    @classmethod
+    def load(self, path):
+        with open(path, 'rb') as f:
+            obj = pickle.load(f)
+            return obj
+
+    def save(self, path):
+        with open(path, 'wb') as f:
+            pickle.dump(self, f)
+
+
 @dataclass
-class VAEConfig:
+class VAEConfig(SaveLoadMixin):
     hidden_size: int = 64
     dropout: float = 0.0
     embed_p: float = 0.0
@@ -210,33 +225,24 @@ class VAEConfig:
     def to_dict(self):
         return asdict(self)
 
-    def save(self, path):
-        pass
-
-    def load(self, path):
-        pass
 
 @dataclass
-class DataConfig:
+class DataConfig(SaveLoadMixin):
     df: pd.DataFrame = None
     cat_names: List[str] = None
-    cont_names: List[str] = No
+    cont_names: List[str] = None
 
-    def save
 
 class TVAE:
-    def __init__(self, config: VAEConfig, df: pd.DataFrame, cat_names: List[str], cont_names: List[str], name=None):
+    def __init__(self, config: VAEConfig, data_config: DataConfig, name=None):
 
         self.name = name
 
-        self.config = config.to_dict()
-        self.cat_names = cat_names
-        self.cont_names = cont_names
-        self.df = df
+        self.config = config
+        self.data_config = data_config
 
         if name is None:
-            self.name = hashlib.sha256(json.dumps(self.config).encode('utf-8')).hexdigest()
-        
+            self.name = hashlib.sha256(json.dumps(self.config.to_dict()).encode('utf-8')).hexdigest()
 
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -244,32 +250,37 @@ class TVAE:
 
         cbs = [ParamScheduler({'kl_weight': f}), AnnealedLossCallback()]
 
-        to = TabularPandasIdentity(df, [Categorify, FillMissing, Normalize, SetMinMax], cat_names, cont_names,
-                                   splits=RandomSplitter(seed=32)(df))
+        to = TabularPandasIdentity(self.data_config.df, [Categorify, FillMissing, Normalize, SetMinMax],
+                                   self.data_config.cat_names, self.data_config.cont_names,
+                                   splits=RandomSplitter(seed=32)(self.data_config.df))
 
         metrics = [MSEMetric(), CEMetric(to.total_cats), KLDMetric(), MUMetric(), StdMetric()]
 
-        dls = to.dataloaders(bs=self.config['batch_size'])
+        dls = to.dataloaders(bs=self.config.batch_size)
         dls.n_inp = 2
 
-        model = TabularVAE(get_emb_sz(to.train), len(cont_names), self.config['hidden_size'], ps=self.config['dropout'],
+        model = TabularVAE(get_emb_sz(to.train), len(self.data_config.cont_names), self.config.hidden_size,
+                           ps=self.config.dropout,
                            cats=to.total_cats,
-                           embed_p=self.config['embed_p'], bswap=self.config['bswap'], low=tensor(to.low, device=device),
+                           embed_p=self.config.embed_p, bswap=self.config.bswap,
+                           low=tensor(to.low, device=device),
                            high=tensor(to.high, device=device))
 
         model.to(device)
-        loss_func = VAERecreatedLoss(to.total_cats, df.shape[0], self.config['batch_size'], to.total_cats)
-        learn = TabularLearner(dls, model, lr=self.config['lr'], loss_func=loss_func, wd=self.config['wd'], opt_func=ranger,
+        loss_func = VAERecreatedLoss(to.total_cats, self.data_config.df.shape[0], self.config.batch_size, to.total_cats)
+        learn = TabularLearner(dls, model, lr=self.config.lr, loss_func=loss_func, wd=self.config.wd,
+                               opt_func=ranger,
                                cbs=cbs,
                                metrics=metrics).to_fp16()
 
         self.learn = learn
         self.to = to
+        self.reducer = None
 
-        self.model_path = models_path.joinpath(self.name).as_posix()
+        self.model_path = models_path.joinpath(self.name)
 
     def train(self):
-        self.learn.fit_flat_cos(self.config['epochs'], lr=self.config['lr'])
+        self.learn.fit_flat_cos(self.config.epochs, lr=self.config.lr)
 
     def _to_continuous_dataframe(self, cont_preds):
         if isinstance(cont_preds, torch.Tensor):
@@ -288,8 +299,8 @@ class TVAE:
         return cat_reduced
 
     def _new_unique_rows_generated(self, synth_df, real_df):
-        uniq_synth = synth_df[self.cat_names].drop_duplicates()
-        uniq_real = real_df[self.cat_names].drop_duplicates()
+        uniq_synth = synth_df[self.data_config.cat_names].drop_duplicates()
+        uniq_real = real_df[self.data_config.cat_names].drop_duplicates()
         new_uniq = pd.concat([uniq_real, uniq_synth], axis=0).drop_duplicates()
 
         new_vals_uniq = (new_uniq.shape[0] - uniq_real.shape[0]) / uniq_real.shape[0]
@@ -347,7 +358,7 @@ class TVAE:
         return gg
 
     def _evaluate_recon_pref(self):
-        df_dec, cats, conts, dl, outs_enc = self.reconstruct(self.df)
+        df_dec, cats, conts, dl, outs_enc = self.reconstruct(self.data_config.df)
 
         conts = self._to_continuous_dataframe(conts)
         df_d = pd.concat([pd.DataFrame(cats, columns=self.to.cat_names), conts], axis=1)
@@ -377,8 +388,8 @@ class TVAE:
             res_entr = pd.DataFrame(res_entr, index=[0])
             return res_entr, res_val_count
 
-        real_df_entr, real_df_val_c = cols_entropy(real_df[self.cat_names])
-        synth_df_entr, synth_df_val_c = cols_entropy(synth_df[self.cat_names])
+        real_df_entr, real_df_val_c = cols_entropy(real_df[self.data_config.cat_names])
+        synth_df_entr, synth_df_val_c = cols_entropy(synth_df[self.data_config.cat_names])
 
         comp_val_c = {}
         for c, v in real_df_val_c.items():
@@ -399,8 +410,8 @@ class TVAE:
         return org_gn
 
     def _evaluate_ood_perf(self, N=None):
-        N = self.df.shape[0] if N is None else N
-        real_df = self._transform(self.df)[0]
+        N = self.data_config.df.shape[0] if N is None else N
+        real_df = self._transform(self.data_config.df)[0]
         synth_df = self.generate(N, 0.0, 2.0)[0]
         new_uniq = self._new_unique_rows_generated(synth_df, real_df)
         comp_entr, real_df_entr, synth_df_entr, value_count_comp = self._analyse_entropy(synth_df, real_df)
@@ -420,6 +431,22 @@ class TVAE:
     def train_and_evaluate(self, N=10000):
         self.train()
         return self.evaluate(N)
+
+    def train_dimension_reduction(self, num_iter=10):
+        xenc = self.encode(self.data_config.df)[0]
+        self.reducer = pacmap.PaCMAP(n_components=2, n_neighbors=None, MN_ratio=0.5, FP_ratio=2.0, save_tree=True,
+                                     num_iters=num_iter, verbose=True)
+        self.reducer.fit(xenc)
+
+    def reduce_embed_dims(self, xenc, encode=False, num_iter=10):
+        if self.reducer is None:
+            self.train_dimension_reduction(num_iter)
+
+        if encode:
+            xenc = self.encode(xenc)[0]
+
+        emb = self.reducer.transform(xenc)
+        return emb
 
     def _recon_df(self, cont_preds, cat_preds):
         cont_df = self._to_continuous_dataframe(cont_preds)
@@ -468,7 +495,7 @@ class TVAE:
     def generate(self, N, mean, std):
         with torch.no_grad():
             self.learn.model.eval()
-            outs_enc = torch.normal(mean=mean, std=std, size=(N, self.config['hidden_size'])).to(self.device)
+            outs_enc = torch.normal(mean=mean, std=std, size=(N, self.config.hidden_size)).to(self.device)
             outs_dec_cats, outs_dec_conts = self.learn.model.decode(outs_enc)
             df_dec = self._recon_df(outs_dec_conts.cpu().numpy(), outs_dec_cats.cpu().numpy())
 
@@ -482,13 +509,24 @@ class TVAE:
         return org_gn
 
     def save(self):
-        self.learn.save(file=self.model_path)
+        # save model
+        self.model_path.mkdir(parents=True, exist_ok=True)
+        self.config.save(self.model_path.joinpath('config.pkl').as_posix())
+        self.data_config.save(self.model_path.joinpath('data_config.pkl').as_posix())
+        self.learn.save(file=self.model_path.joinpath('model').as_posix())
+        pacmap.save(self.reducer, self.model_path.joinpath('reducer.pkl').as_posix())
 
     def load(self):
-        self.learn = self.learn.load(self.model_path)
+        # load model
+        self.learn = self.learn.load(self.model_path.joinpath('model').as_posix())
+        self.config = VAEConfig.load(self.model_path.joinpath('config.pkl').as_posix())
+        self.data_config = DataConfig.load(self.model_path.joinpath('data_config.pkl').as_posix())
+        self.reducer = pacmap.load(self.model_path.joinpath('reducer.pkl').as_posix())
+
+        return self
 
     def make_encoding_distribution_plots(self, N=1000, show=False, legend=False):
-        out_enc = self.encode(self.df.sample(N))[0]
+        out_enc = self.encode(self.data_config.df.sample(N))[0]
         outs_enc_df = pd.DataFrame(out_enc, columns=list(range(out_enc.shape[1])))
 
         g = sns.kdeplot(data=outs_enc_df, legend=legend)
@@ -499,8 +537,8 @@ class TVAE:
             plt.show()
 
     def compare_synthetic_data_distributions(self, N=10000):
-        all_cols = self.cat_names + self.cont_names
-        real_df = self._transform(self.df)[0]
+        all_cols = self.data_config.cat_names + self.data_config.cont_names
+        real_df = self._transform(self.data_config.df)[0]
         synth_df = self.generate(N, 0.0, 2.0)[0]
         for scol in all_cols:
             print(scol)
