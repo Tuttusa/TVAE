@@ -1,3 +1,4 @@
+import uuid
 from typing import List
 
 import optuna
@@ -9,10 +10,10 @@ from tvae.paths import tuning_path
 
 
 class Optim:
-    def __init__(self):
+    def __init__(self, name=str(uuid.uuid4())):
         tuning_path.mkdir(parents=True, exist_ok=True)
 
-        self.study = optuna.create_study(storage=f"sqlite:///{tuning_path.joinpath('vae_compression.db').as_posix()}",
+        self.study = optuna.create_study(storage=f"sqlite:///{tuning_path.joinpath(name+'_vae_compression.db').as_posix()}",
                                          study_name="vae_compression",
                                          load_if_exists=True, directions=["maximize", "minimize", "maximize"])
 
