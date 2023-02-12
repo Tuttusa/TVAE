@@ -10,10 +10,14 @@ from tvae.paths import tuning_path
 
 
 class Optim:
-    def __init__(self, name=str(uuid.uuid4())):
-        tuning_path.mkdir(parents=True, exist_ok=True)
+    def __init__(self, save_path=None, name=str(uuid.uuid4())):
 
-        self.study = optuna.create_study(storage=f"sqlite:///{tuning_path.joinpath(name+'_vae_compression.db').as_posix()}",
+        if save_path is None:
+            tuning_path.mkdir(parents=True, exist_ok=True)
+            save_path = tuning_path.joinpath(
+                name+'_vae_compression.db').as_posix()
+
+        self.study = optuna.create_study(storage=f"sqlite:///{save_path}",
                                          study_name="vae_compression",
                                          load_if_exists=True, directions=["maximize", "minimize", "maximize"])
 
@@ -40,12 +44,15 @@ class Optim:
                 layers=layers
             )
 
-            tvae = TVAE(config=config, df=df, cat_names=cat_cols, cont_names=cont_cols)
+            tvae = TVAE(config=config, df=df,
+                        cat_names=cat_cols, cont_names=cont_cols)
 
             recon_perf, ood_perf = tvae.train_and_evaluate(N=10000)
 
-            f1_s = recon_perf[2][recon_perf[2]['MetricName'] == 'F1'].iloc[:, 1:].to_numpy().mean()
-            mape = recon_perf[1][recon_perf[1]['GroupBy'] == 'MARE'].iloc[:, 1:].to_numpy().mean()
+            f1_s = recon_perf[2][recon_perf[2]['MetricName']
+                                 == 'F1'].iloc[:, 1:].to_numpy().mean()
+            mape = recon_perf[1][recon_perf[1]['GroupBy']
+                                 == 'MARE'].iloc[:, 1:].to_numpy().mean()
 
             recon_error = f1_s - mape
 
@@ -64,7 +71,8 @@ class Optim:
                                                                                       "ood_generation"],
                                                             targets=lambda x: x.values[:3])
         if save:
-            study_plot.write_html(tuning_path.joinpath("t_vae_study_plot.html").as_posix())
+            study_plot.write_html(tuning_path.joinpath(
+                "t_vae_study_plot.html").as_posix())
 
         return study_plot
 
@@ -72,6 +80,7 @@ class Optim:
         study_sweep_plot = optuna.visualization.plot_parallel_coordinate(self.study,
                                                                          target=lambda x: x.values[0])
         if save:
-            study_sweep_plot.write_html(tuning_path.joinpath("t_vae_study_plot_sweep.html").as_posix())
+            study_sweep_plot.write_html(tuning_path.joinpath(
+                "t_vae_study_plot_sweep.html").as_posix())
 
         return study_sweep_plot
