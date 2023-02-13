@@ -33,6 +33,11 @@ def adult_dataset():
 
 t_df, t_cat_cols, t_cont_cols, x_df, x_cat_cols, x_cont_cols, df, cat_names, cont_names, all_cols = adult_dataset()
 
+#%%
+
+xoptim = Optim()
+xoptim.find_best_config(x_df, x_cat_cols, x_cont_cols, nb_trials=10)
+
 # %%
 from tvae.model import TVAE, VAEConfig, DataConfig
 

@@ -38,6 +38,7 @@ import pickle
 from tvae.loss import VAERecreatedLoss, AnnealedLossCallback
 from tvae.metrics import CEMetric, KLDMetric, MUMetric, StdMetric, MSEMetric, mean_absolute_relative_error
 from tvae.paths import models_path
+from tvae.utils import VAEConfig, DataConfig
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -85,7 +86,7 @@ class TabDataLoaderIdentity(TabDataLoader):
     def __init__(self, dataset, bs=16, shuffle=False, after_batch=None, num_workers=0, **kwargs):
         if after_batch is None:
             after_batch = L(TransformBlock().batch_tfms) + \
-                          ReadTabBatchIdentity(dataset)
+                ReadTabBatchIdentity(dataset)
         super().__init__(dataset, bs=bs, shuffle=shuffle,
                          after_batch=after_batch, num_workers=num_workers, **kwargs)
 
@@ -198,47 +199,6 @@ class TabularVAE(TabularModel):
         decoded_cats, decoded_conts = self.decode(z)
 
         return decoded_cats, decoded_conts, mu, logvar
-
-
-class SaveLoadMixin:
-
-    @classmethod
-    def load(self, path):
-        with open(path, 'rb') as f:
-            obj = pickle.load(f)
-            return obj
-
-    def save(self, path):
-        with open(path, 'wb') as f:
-            pickle.dump(self, f)
-
-
-@dataclass
-class VAEConfig(SaveLoadMixin):
-    hidden_size: int = 64
-    dropout: float = 0.0
-    embed_p: float = 0.0
-    wd: float = 0.01
-    bswap: float = 0.1
-    lr: float = 4e-3
-    epochs: int = 2
-    batch_size: int = 1024
-    layers: List[int] = field(default_factory=lambda: [1024, 512, 256])
-
-    def from_study(self, study: Study, trial_num=0):
-        for k, v in study.best_trials[trial_num].params.items():
-            setattr(self, k, v)
-        return self
-
-    def to_dict(self):
-        return asdict(self)
-
-
-@dataclass
-class DataConfig(SaveLoadMixin):
-    df: pd.DataFrame = None
-    cat_names: List[str] = None
-    cont_names: List[str] = None
 
 
 class Reducer:
@@ -488,15 +448,16 @@ class TVAE:
 
     def train_dimension_reduction(self, reducer_args={}):
         default_reducer_args = {'n_components': 2, 'n_neighbors': None, 'MN_ratio': 0.5, 'FP_ratio': 2.0,
-                            'save_tree': True, 'num_iters': 1, 'verbose': True}
+                                'save_tree': True, 'num_iters': 1, 'verbose': True}
         default_reducer_args.update(reducer_args)
-        
+
         xenc = self.encode(self.data_config.df)[0]
         self.reducer.train(xenc, default_reducer_args)
 
     def reduce_embed_dims(self, xenc, encode=False, num_iters=10):
         if not self.reducer.trained():
-            self.train_dimension_reduction(reducer_args={'num_iters':num_iters})
+            self.train_dimension_reduction(
+                reducer_args={'num_iters': num_iters})
 
         if encode:
             xenc = self.encode(xenc)[0]

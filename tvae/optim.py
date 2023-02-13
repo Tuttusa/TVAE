@@ -5,9 +5,9 @@ import optuna
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from tvae.model import TVAE, VAEConfig
+from tvae.model import TVAE
 from tvae.paths import tuning_path
-
+from tvae.utils import VAEConfig, DataConfig
 
 class Optim:
     def __init__(self, save_path=None, name=str(uuid.uuid4())):
