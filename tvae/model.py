@@ -496,7 +496,7 @@ class TVAE:
 
     def reduce_embed_dims(self, xenc, encode=False, num_iters=10):
         if not self.reducer.trained:
-            self.train_dimension_reduction(reducer_args{'num_iters':num_iters})
+            self.train_dimension_reduction(reducer_args={'num_iters':num_iters})
 
         if encode:
             xenc = self.encode(xenc)[0]
