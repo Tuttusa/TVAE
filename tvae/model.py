@@ -3,7 +3,7 @@ from dataclasses import dataclass, field, asdict
 from typing import List
 import uuid
 import pacmap
-
+import pathlib
 import numpy as np
 import hashlib
 
@@ -498,7 +498,7 @@ class TVAE:
     def reduce_embed_dims(self, xenc, encode=False, num_iter=10):
         if not self.reducer.trained:
             self.train_dimension_reduction(num_iter)
-            
+
         if encode:
             xenc = self.encode(xenc)[0]
 
