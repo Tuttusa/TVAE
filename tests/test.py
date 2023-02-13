@@ -56,5 +56,6 @@ tvae = tvae.load()
 # %%
 
 xenc = tvae.reduce_embed_dims(x_df, encode=True)
+print('hello')
 
 # %%

@@ -492,7 +492,8 @@ class TVAE:
         default_reducer_args.update(reducer_args)
         
         xenc = self.encode(self.data_config.df)[0]
-        self.reducer.train(xenc, reducer_args)
+        self.reducer.train(xenc, default_reducer_args)
+        print('trained')
 
     def reduce_embed_dims(self, xenc, encode=False, num_iters=10):
         if not self.reducer.trained():
