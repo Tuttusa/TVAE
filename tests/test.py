@@ -55,6 +55,6 @@ tvae = tvae.load()
 
 # %%
 
-xenc = tvae.reduce_embed_dims(x_df, encode=True, num_iter=1)
+xenc = tvae.reduce_embed_dims(x_df, encode=True)
 
 # %%
