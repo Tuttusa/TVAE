@@ -28,18 +28,20 @@ class Optim:
             optuna optimization to minimize the reconstruction error of the vae and the size of the vae
             """
             nb_layers = trial.suggest_int("nb_layers", 2, 6)
-            strt_layer_size = trial.suggest_int("layers", 24, 1024)
+            strt_layer_size = trial.suggest_int("strt_layer_size", 24, 1024)
             layers = [int(strt_layer_size / (e + 1)) for e in range(nb_layers)]
             trial.set_user_attr("layers", layers)
 
+            hidden_size = int(layers[-1] / 2)
+
             config = VAEConfig(
-                hidden_size=trial.suggest_int("hidden_size", 1, 128),
+                hidden_size=hidden_size,
                 dropout=trial.suggest_float("dropout", 0.0, 0.5),
                 embed_p=trial.suggest_float("embed_p", 0.0, 0.5),
                 wd=trial.suggest_float("wd", 0.01, 0.1),
                 bswap=trial.suggest_float("bswap", 0.0, 0.5),
                 lr=trial.suggest_float("lr", 1e-3, 4e-3),
-                epochs=trial.suggest_int("epochs", 9, 30),
+                epochs=trial.suggest_int("epochs", 5, 30),
                 batch_size=trial.suggest_int("batch_size", 128, 1024),
                 layers=layers
             )
@@ -61,7 +63,7 @@ class Optim:
             trial.set_user_attr("mape", mape)
             trial.set_user_attr("new_ood", new_ood)
 
-            return recon_error, config.hidden_size, new_ood
+            return recon_error, hidden_size, new_ood
 
         self.study.optimize(objective, n_trials=nb_trials)
 
