@@ -233,6 +233,31 @@ class DataConfig(SaveLoadMixin):
     cont_names: List[str] = None
 
 
+class Reducer:
+    def __init__(self):
+        self.reducer = None
+
+    def train(self, xenc:np.array, reducer_args:dict):
+        self.reducer = pacmap.PaCMAP(**reducer_args)
+        self.reducer.fit(xenc)
+
+    def process(self, xenc, num_iter=10):
+        if self.reducer is None:
+            self.train_dimension_reduction(num_iter)
+
+        emb = self.reducer.transform(xenc)
+        return emb
+
+    def save(self, path):
+        if self.reducer is not None:
+            pacmap.save(self.reducer, path)
+
+    def load(self, path: pathlib.Path):
+        if path.exists():
+            self.reducer = pacmap.load(path)
+        return self
+
+
 class TVAE:
     def __init__(self, config: VAEConfig, data_config: DataConfig, path=None, name=None):
 
@@ -275,7 +300,7 @@ class TVAE:
 
         self.learn = learn
         self.to = to
-        self.reducer = None
+        self.reducer = Reducer()
         
         self.model_path = path
         if path is None:
@@ -436,18 +461,13 @@ class TVAE:
 
     def train_dimension_reduction(self, num_iter=10):
         xenc = self.encode(self.data_config.df)[0]
-        self.reducer = pacmap.PaCMAP(n_components=2, n_neighbors=None, MN_ratio=0.5, FP_ratio=2.0, save_tree=True,
-                                     num_iters=num_iter, verbose=True)
-        self.reducer.fit(xenc)
+        self.reducer.train(xenc)
 
     def reduce_embed_dims(self, xenc, encode=False, num_iter=10):
-        if self.reducer is None:
-            self.train_dimension_reduction(num_iter)
-
         if encode:
             xenc = self.encode(xenc)[0]
 
-        emb = self.reducer.transform(xenc)
+        emb = self.reducer.process(xenc)
         return emb
 
     def _recon_df(self, cont_preds, cat_preds):
@@ -516,14 +536,15 @@ class TVAE:
         self.config.save(self.model_path.joinpath('config.pkl').as_posix())
         self.data_config.save(self.model_path.joinpath('data_config.pkl').as_posix())
         self.learn.save(file=self.model_path.joinpath('model').as_posix())
-        pacmap.save(self.reducer, self.model_path.joinpath('reducer.pkl').as_posix())
+        self.reducer.save(self.model_path.joinpath('reducer'))
+        
 
     def load(self):
         # load model
         self.learn = self.learn.load(self.model_path.joinpath('model').as_posix())
         self.config = VAEConfig.load(self.model_path.joinpath('config.pkl').as_posix())
         self.data_config = DataConfig.load(self.model_path.joinpath('data_config.pkl').as_posix())
-        self.reducer = pacmap.load(self.model_path.joinpath('reducer.pkl').as_posix())
+        self.reducer = self.reducer.load(self.model_path.joinpath('reducer'))
 
         return self
 
