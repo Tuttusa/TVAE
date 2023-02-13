@@ -33,7 +33,6 @@ from sklearn.metrics import precision_score, recall_score, f1_score
 from torch.distributions import Normal
 import seaborn as sns
 import matplotlib.pyplot as plt
-import pickle
 
 from tvae.loss import VAERecreatedLoss, AnnealedLossCallback
 from tvae.metrics import CEMetric, KLDMetric, MUMetric, StdMetric, MSEMetric, mean_absolute_relative_error
@@ -219,6 +218,22 @@ class Reducer:
     def process(self, xenc, num_iter=10):
         emb = self.reducer.transform(xenc)
         return emb
+    
+    def plot(xenc: np.array, columns=None):
+        
+        df_emb = df.copy()
+        df_emb[['x', 'y']] = xenc
+
+        if columns is not None:
+            for col in columns:
+                sns.scatterplot(data=df_emb, x='x', y='y', hue=col)
+
+                plt.show()
+        else:
+            sns.scatterplot(data=df_emb, x='x', y='y')
+
+            plt.show()
+
 
     def save(self, path):
         if self.reducer is not None:
@@ -465,6 +480,10 @@ class TVAE:
 
         emb = self.reducer.process(xenc)
         return emb
+
+    def plot_reduced_dims(self, df: pd.DataFrame, columns=None):
+        xenc = tvae.reduce_embed_dims(df, encode=True)
+        self.reducer.plot(xenc, columns)
 
     def _recon_df(self, cont_preds, cat_preds):
         cont_df = self._to_continuous_dataframe(cont_preds)
