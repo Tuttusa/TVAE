@@ -209,7 +209,11 @@ class Reducer:
         return (self.reducer is not None) and (self.reducer.tree is not None)
 
     def train(self, xenc: np.array, reducer_args: dict):
-        self.reducer = pacmap.PaCMAP(**reducer_args)
+        default_reducer_args = {'n_components': 2, 'n_neighbors': None, 'MN_ratio': 0.5, 'FP_ratio': 2.0,
+                                'save_tree': True, 'num_iters': 1, 'verbose': True}
+        default_reducer_args.update(reducer_args)
+        
+        self.reducer = pacmap.PaCMAP(**default_reducer_args)
         self.reducer.fit(xenc)
 
     def process(self, xenc, num_iter=10):
@@ -447,12 +451,9 @@ class TVAE:
         return self.evaluate(N)
 
     def train_dimension_reduction(self, reducer_args={}):
-        default_reducer_args = {'n_components': 2, 'n_neighbors': None, 'MN_ratio': 0.5, 'FP_ratio': 2.0,
-                                'save_tree': True, 'num_iters': 1, 'verbose': True}
-        default_reducer_args.update(reducer_args)
 
         xenc = self.encode(self.data_config.df)[0]
-        self.reducer.train(xenc, default_reducer_args)
+        self.reducer.train(xenc, reducer_args)
 
     def reduce_embed_dims(self, xenc, encode=False, num_iters=10):
         if not self.reducer.trained():
