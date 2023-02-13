@@ -2,6 +2,7 @@ from dataclasses import dataclass, field, asdict
 from typing import List
 from optuna import Study
 import pandas as pd
+import pickle
 
 
 class SaveLoadMixin:
