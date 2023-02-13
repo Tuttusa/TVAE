@@ -44,8 +44,7 @@ class Optim:
                 layers=layers
             )
 
-            tvae = TVAE(config=config, df=df,
-                        cat_names=cat_cols, cont_names=cont_cols)
+            tvae = TVAE(config=config, data_config=DataConfig(df=df, cat_names=cat_cols, cont_names=cont_cols))
 
             recon_perf, ood_perf = tvae.train_and_evaluate(N=10000)
 
