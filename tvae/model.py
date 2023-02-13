@@ -85,7 +85,7 @@ class TabDataLoaderIdentity(TabDataLoader):
     def __init__(self, dataset, bs=16, shuffle=False, after_batch=None, num_workers=0, **kwargs):
         if after_batch is None:
             after_batch = L(TransformBlock().batch_tfms) + \
-                ReadTabBatchIdentity(dataset)
+                          ReadTabBatchIdentity(dataset)
         super().__init__(dataset, bs=bs, shuffle=shuffle,
                          after_batch=after_batch, num_workers=num_workers, **kwargs)
 
@@ -254,9 +254,6 @@ class Reducer:
         self.reducer.fit(xenc)
 
     def process(self, xenc, num_iter=10):
-        if self.reducer is None:
-            self.train_dimension_reduction(num_iter)
-
         emb = self.reducer.transform(xenc)
         return emb
 
@@ -490,14 +487,16 @@ class TVAE:
         self.train()
         return self.evaluate(N)
 
-    def train_dimension_reduction(self, num_iter=10):
+    def train_dimension_reduction(self, reducer_args=None):
+        if reducer_args is None:
+            reducer_args = {'n_components': 2, 'n_neighbors': None, 'MN_ratio': 0.5, 'FP_ratio': 2.0,
+                            'save_tree': True, 'num_iters': 1, 'verbose': True}
         xenc = self.encode(self.data_config.df)[0]
-        self.reducer.train(xenc, reducer_args={'n_components': 2, 'n_neighbors': None, 'MN_ratio': 0.5, 'FP_ratio': 2.0,
-                                               'save_tree': True, 'num_iters': num_iter, 'verbose': True})
+        self.reducer.train(xenc, **reducer_args)
 
-    def reduce_embed_dims(self, xenc, encode=False, num_iter=10):
+    def reduce_embed_dims(self, xenc, encode=False, num_iters=10):
         if not self.reducer.trained:
-            self.train_dimension_reduction(num_iter)
+            self.train_dimension_reduction(num_iters=num_iters)
 
         if encode:
             xenc = self.encode(xenc)[0]
