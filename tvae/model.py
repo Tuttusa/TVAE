@@ -84,8 +84,10 @@ class TabDataLoaderIdentity(TabDataLoader):
 
     def __init__(self, dataset, bs=16, shuffle=False, after_batch=None, num_workers=0, **kwargs):
         if after_batch is None:
-            after_batch = L(TransformBlock().batch_tfms) + ReadTabBatchIdentity(dataset)
-        super().__init__(dataset, bs=bs, shuffle=shuffle, after_batch=after_batch, num_workers=num_workers, **kwargs)
+            after_batch = L(TransformBlock().batch_tfms) + \
+                ReadTabBatchIdentity(dataset)
+        super().__init__(dataset, bs=bs, shuffle=shuffle,
+                         after_batch=after_batch, num_workers=num_workers, **kwargs)
 
     def create_batch(self, b): return self.dataset.iloc[b]
 
@@ -112,7 +114,8 @@ class BatchSwapNoise(Module):
     def forward(self, x):
         if self.training:
             mask = torch.rand(x.size()) > (1 - self.p)
-            l1 = torch.floor(torch.rand(x.size()) * x.size(0)).type(torch.LongTensor)
+            l1 = torch.floor(torch.rand(x.size()) * x.size(0)
+                             ).type(torch.LongTensor)
             l2 = (mask.type(torch.LongTensor) * x.size(1))
             res = (l1 * l2).view(-1)
             idx = torch.arange(x.nelement()) + res
@@ -125,7 +128,8 @@ class BatchSwapNoise(Module):
 class TabularVAE(TabularModel):
     def __init__(self, emb_szs, n_cont, hidden_size, cats, low, high, layers=[1024, 512, 256], ps=0.2,
                  embed_p=0.01, bswap=None, act_cls=Swish()):
-        super().__init__(emb_szs, n_cont, layers=layers, out_sz=hidden_size, embed_p=embed_p, act_cls=act_cls)
+        super().__init__(emb_szs, n_cont, layers=layers,
+                         out_sz=hidden_size, embed_p=embed_p, act_cls=act_cls)
 
         self.bswap = bswap
         self.cats = cats
@@ -137,7 +141,8 @@ class TabularVAE(TabularModel):
         self.fc_mu = nn.Linear(hidden_size, hidden_size)
         self.fc_std = nn.Linear(hidden_size, hidden_size)
 
-        if self.bswap != None: self.noise = BatchSwapNoise(self.bswap)
+        if self.bswap != None:
+            self.noise = BatchSwapNoise(self.bswap)
         self.decoder = nn.Sequential(
             LinBnDrop(hidden_size, 256, p=ps, act=act_cls),
             LinBnDrop(256, 512, p=ps, act=act_cls),
@@ -149,9 +154,11 @@ class TabularVAE(TabularModel):
             SigmoidRange(low=low, high=high)
         )
 
-        self.decoder_cat = LinBnDrop(1024, self.activation_cats, p=ps, bn=False, act=None)
+        self.decoder_cat = LinBnDrop(
+            1024, self.activation_cats, p=ps, bn=False, act=None)
 
-        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(
+            "cuda:0" if torch.cuda.is_available() else "cpu")
 
     def reparameterize(self, mu, logvar):
         std = logvar.mul(0.5).exp_()
@@ -185,7 +192,8 @@ class TabularVAE(TabularModel):
             x_cont = self.noise(x_cont)
 
         z, mu, logvar = self.encode(x_cat, x_cont)
-        if (encode): return z
+        if (encode):
+            return z
 
         decoded_cats, decoded_conts = self.decode(z)
 
@@ -237,7 +245,11 @@ class Reducer:
     def __init__(self):
         self.reducer = None
 
-    def train(self, xenc:np.array, reducer_args:dict):
+    @property
+    def trained(self):
+        return self.reducer is not None
+
+    def train(self, xenc: np.array, reducer_args: dict):
         self.reducer = pacmap.PaCMAP(**reducer_args)
         self.reducer.fit(xenc)
 
@@ -267,11 +279,13 @@ class TVAE:
         self.data_config = data_config
 
         if name is None:
-            self.name = hashlib.sha256(json.dumps(self.config.to_dict()).encode('utf-8')).hexdigest()
+            self.name = hashlib.sha256(json.dumps(
+                self.config.to_dict()).encode('utf-8')).hexdigest()
 
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-        f = combine_scheds([.1, .3, .6], [SchedCos(0, 0), SchedCos(0, 1), SchedNo(1, 1)])
+        f = combine_scheds([.1, .3, .6], [SchedCos(
+            0, 0), SchedCos(0, 1), SchedNo(1, 1)])
 
         cbs = [ParamScheduler({'kl_weight': f}), AnnealedLossCallback()]
 
@@ -279,7 +293,8 @@ class TVAE:
                                    self.data_config.cat_names, self.data_config.cont_names,
                                    splits=RandomSplitter(seed=32)(self.data_config.df))
 
-        metrics = [MSEMetric(), CEMetric(to.total_cats), KLDMetric(), MUMetric(), StdMetric()]
+        metrics = [MSEMetric(), CEMetric(to.total_cats),
+                   KLDMetric(), MUMetric(), StdMetric()]
 
         dls = to.dataloaders(bs=self.config.batch_size)
         dls.n_inp = 2
@@ -292,7 +307,8 @@ class TVAE:
                            high=tensor(to.high, device=device))
 
         model.to(device)
-        loss_func = VAERecreatedLoss(to.total_cats, self.data_config.df.shape[0], self.config.batch_size, to.total_cats)
+        loss_func = VAERecreatedLoss(
+            to.total_cats, self.data_config.df.shape[0], self.config.batch_size, to.total_cats)
         learn = TabularLearner(dls, model, lr=self.config.lr, loss_func=loss_func, wd=self.config.wd,
                                opt_func=ranger,
                                cbs=cbs,
@@ -301,7 +317,7 @@ class TVAE:
         self.learn = learn
         self.to = to
         self.reducer = Reducer()
-        
+
         self.model_path = path
         if path is None:
             self.model_path = models_path.joinpath(self.name)
@@ -313,7 +329,8 @@ class TVAE:
         if isinstance(cont_preds, torch.Tensor):
             cont_preds = cont_preds.cpu().numpy()
         return pd.DataFrame(
-            (cont_preds * np.array(list(self.to.stds.values()))) + np.array(list(self.to.means.values())),
+            (cont_preds * np.array(list(self.to.stds.values()))) +
+            np.array(list(self.to.means.values())),
             columns=self.to.cont_names)
 
     def _to_cat_dataframe(self, cat_preds):
@@ -330,7 +347,8 @@ class TVAE:
         uniq_real = real_df[self.data_config.cat_names].drop_duplicates()
         new_uniq = pd.concat([uniq_real, uniq_synth], axis=0).drop_duplicates()
 
-        new_vals_uniq = (new_uniq.shape[0] - uniq_real.shape[0]) / uniq_real.shape[0]
+        new_vals_uniq = (new_uniq.shape[0] -
+                         uniq_real.shape[0]) / uniq_real.shape[0]
 
         return new_vals_uniq
 
@@ -348,8 +366,10 @@ class TVAE:
         ma = (np.abs(targets - preds)).max().to_frame().T
         mean = (np.abs(targets - preds)).mean().to_frame().T
         median = (np.abs(targets - preds)).median().to_frame().T
-        r2 = pd.DataFrame.from_dict({c: [r2_score(targets[c], preds[c])] for c in preds.columns})
-        mape = pd.DataFrame.from_dict({c: [mean_absolute_relative_error(targets[c], preds[c])] for c in preds.columns})
+        r2 = pd.DataFrame.from_dict(
+            {c: [r2_score(targets[c], preds[c])] for c in preds.columns})
+        mape = pd.DataFrame.from_dict(
+            {c: [mean_absolute_relative_error(targets[c], preds[c])] for c in preds.columns})
 
         r2.mean(axis=1)
 
@@ -368,7 +388,8 @@ class TVAE:
 
         cat_targs = pd.DataFrame(cat_targs, columns=self.to.cat_names)
 
-        accuracy = pd.DataFrame.from_dict({c: [accuracy_score(cat_targs[c], cat_preds[c])] for c in cat_preds.columns})
+        accuracy = pd.DataFrame.from_dict(
+            {c: [accuracy_score(cat_targs[c], cat_preds[c])] for c in cat_preds.columns})
         recall = pd.DataFrame.from_dict({c: [recall_score(cat_targs[c], cat_preds[c], average='weighted')]
                                          for c in cat_preds.columns})
         precision = pd.DataFrame.from_dict(
@@ -385,17 +406,21 @@ class TVAE:
         return gg
 
     def _evaluate_recon_pref(self):
-        df_dec, cats, conts, dl, outs_enc = self.reconstruct(self.data_config.df)
+        df_dec, cats, conts, dl, outs_enc = self.reconstruct(
+            self.data_config.df)
 
         conts = self._to_continuous_dataframe(conts)
-        df_d = pd.concat([pd.DataFrame(cats, columns=self.to.cat_names), conts], axis=1)
+        df_d = pd.concat(
+            [pd.DataFrame(cats, columns=self.to.cat_names), conts], axis=1)
         df_dec.columns = list(map(lambda x: f"{x}_rec", df_dec.columns))
 
         comp_df = pd.concat([df_d, df_dec], axis=1)
-        comp_df_l = sum(list(map(list, zip(df_d.columns.tolist(), df_dec.columns.tolist()))), [])
+        comp_df_l = sum(
+            list(map(list, zip(df_d.columns.tolist(), df_dec.columns.tolist()))), [])
         comp_df = comp_df[comp_df_l]
 
-        (cat_preds, cont_preds, mu, logvar), (cat_targs, cont_targs) = self.learn.get_preds(dl=dl)
+        (cat_preds, cont_preds, mu, logvar), (cat_targs,
+                                              cont_targs) = self.learn.get_preds(dl=dl)
 
         cont_perf_data = self._continuous_performance(cont_preds, cont_targs)
         cat_perf_data = self._categorical_performance(cat_targs, cat_preds)
@@ -415,12 +440,15 @@ class TVAE:
             res_entr = pd.DataFrame(res_entr, index=[0])
             return res_entr, res_val_count
 
-        real_df_entr, real_df_val_c = cols_entropy(real_df[self.data_config.cat_names])
-        synth_df_entr, synth_df_val_c = cols_entropy(synth_df[self.data_config.cat_names])
+        real_df_entr, real_df_val_c = cols_entropy(
+            real_df[self.data_config.cat_names])
+        synth_df_entr, synth_df_val_c = cols_entropy(
+            synth_df[self.data_config.cat_names])
 
         comp_val_c = {}
         for c, v in real_df_val_c.items():
-            comp_val_c[c] = pd.DataFrame({f"{c}_real": real_df_val_c[c], f"{c}_synth": synth_df_val_c[c]}).fillna(0.0)
+            comp_val_c[c] = pd.DataFrame(
+                {f"{c}_real": real_df_val_c[c], f"{c}_synth": synth_df_val_c[c]}).fillna(0.0)
 
         comp_entr = (synth_df_entr - real_df_entr).mean()
 
@@ -441,10 +469,13 @@ class TVAE:
         real_df = self._transform(self.data_config.df)[0]
         synth_df = self.generate(N, 0.0, 2.0)[0]
         new_uniq = self._new_unique_rows_generated(synth_df, real_df)
-        comp_entr, real_df_entr, synth_df_entr, value_count_comp = self._analyse_entropy(synth_df, real_df)
+        comp_entr, real_df_entr, synth_df_entr, value_count_comp = self._analyse_entropy(
+            synth_df, real_df)
 
-        t_alea_unc = self._get_pvalue_uncertainty(real_df, synth_df, use_encoder=True)
-        x_alea_unc = self._get_pvalue_uncertainty(real_df, synth_df, use_encoder=True)
+        t_alea_unc = self._get_pvalue_uncertainty(
+            real_df, synth_df, use_encoder=True)
+        x_alea_unc = self._get_pvalue_uncertainty(
+            real_df, synth_df, use_encoder=True)
 
         total_alea_unc = (x_alea_unc.numpy(), t_alea_unc.numpy())
 
@@ -461,9 +492,13 @@ class TVAE:
 
     def train_dimension_reduction(self, num_iter=10):
         xenc = self.encode(self.data_config.df)[0]
-        self.reducer.train(xenc)
+        self.reducer.train(xenc, reducer_args={'n_components': 2, 'n_neighbors': None, 'MN_ratio': 0.5, 'FP_ratio': 2.0,
+                                               'save_tree': True, 'num_iters': num_iter, 'verbose': True})
 
     def reduce_embed_dims(self, xenc, encode=False, num_iter=10):
+        if not self.reducer.trained:
+            self.train_dimension_reduction(num_iter)
+            
         if encode:
             xenc = self.encode(xenc)[0]
 
@@ -483,7 +518,8 @@ class TVAE:
         x_conts = torch.cat(list(map(lambda x: x[1], dl)))
 
         x_conts = self._to_continuous_dataframe(x_conts)
-        df_d = pd.concat([pd.DataFrame(x_cats, columns=self.to.cat_names), x_conts], axis=1)
+        df_d = pd.concat(
+            [pd.DataFrame(x_cats, columns=self.to.cat_names), x_conts], axis=1)
 
         return df_d, x_cats, x_conts
 
@@ -501,8 +537,10 @@ class TVAE:
             self.learn.model.eval()
             if isinstance(outs_enc, np.ndarray):
                 outs_enc = torch.from_numpy(outs_enc).to(self.device)
-            outs_dec_cats, outs_dec_conts = self.learn.model.decode(outs_enc.float())
-            df_dec = self._recon_df(outs_dec_conts.cpu().numpy(), outs_dec_cats.cpu().numpy())
+            outs_dec_cats, outs_dec_conts = self.learn.model.decode(
+                outs_enc.float())
+            df_dec = self._recon_df(
+                outs_dec_conts.cpu().numpy(), outs_dec_cats.cpu().numpy())
         return df_dec
 
     def reconstruct(self, df, transform=True):
@@ -517,9 +555,11 @@ class TVAE:
     def generate(self, N, mean, std):
         with torch.no_grad():
             self.learn.model.eval()
-            outs_enc = torch.normal(mean=mean, std=std, size=(N, self.config.hidden_size)).to(self.device)
+            outs_enc = torch.normal(mean=mean, std=std, size=(
+                N, self.config.hidden_size)).to(self.device)
             outs_dec_cats, outs_dec_conts = self.learn.model.decode(outs_enc)
-            df_dec = self._recon_df(outs_dec_conts.cpu().numpy(), outs_dec_cats.cpu().numpy())
+            df_dec = self._recon_df(
+                outs_dec_conts.cpu().numpy(), outs_dec_cats.cpu().numpy())
 
         return df_dec, outs_enc
 
@@ -534,23 +574,27 @@ class TVAE:
         # save model
         self.model_path.mkdir(parents=True, exist_ok=True)
         self.config.save(self.model_path.joinpath('config.pkl').as_posix())
-        self.data_config.save(self.model_path.joinpath('data_config.pkl').as_posix())
+        self.data_config.save(self.model_path.joinpath(
+            'data_config.pkl').as_posix())
         self.learn.save(file=self.model_path.joinpath('model').as_posix())
         self.reducer.save(self.model_path.joinpath('reducer'))
-        
 
     def load(self):
         # load model
-        self.learn = self.learn.load(self.model_path.joinpath('model').as_posix())
-        self.config = VAEConfig.load(self.model_path.joinpath('config.pkl').as_posix())
-        self.data_config = DataConfig.load(self.model_path.joinpath('data_config.pkl').as_posix())
+        self.learn = self.learn.load(
+            self.model_path.joinpath('model').as_posix())
+        self.config = VAEConfig.load(
+            self.model_path.joinpath('config.pkl').as_posix())
+        self.data_config = DataConfig.load(
+            self.model_path.joinpath('data_config.pkl').as_posix())
         self.reducer = self.reducer.load(self.model_path.joinpath('reducer'))
 
         return self
 
     def make_encoding_distribution_plots(self, N=1000, show=False, legend=False):
         out_enc = self.encode(self.data_config.df.sample(N))[0]
-        outs_enc_df = pd.DataFrame(out_enc, columns=list(range(out_enc.shape[1])))
+        outs_enc_df = pd.DataFrame(
+            out_enc, columns=list(range(out_enc.shape[1])))
 
         g = sns.kdeplot(data=outs_enc_df, legend=legend)
 
