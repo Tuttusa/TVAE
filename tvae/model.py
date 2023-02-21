@@ -293,6 +293,8 @@ class TVAE:
         self.to = to
         self.reducer = Reducer()
 
+        self.org_gn = None
+
         self.model_path = path
         if path is None:
             self.model_path = models_path.joinpath(self.name)
@@ -544,9 +546,10 @@ class TVAE:
         return df_dec, outs_enc
 
     def vae_uncert(self, outs_enc):
-        org_gn = self.encode(self.data_config.df)[0]
-        res = torch.exp(Normal(torch.from_numpy(org_gn.mean(axis=0)),
-                                  torch.from_numpy(org_gn.std(axis=0))).
+        if self.org_gn is None:
+            self.org_gn = self.encode(self.data_config.df)[0]
+        res = torch.exp(Normal(torch.from_numpy(self.org_gn.mean(axis=0)),
+                                  torch.from_numpy(self.org_gn.std(axis=0))).
                            log_prob(torch.from_numpy(outs_enc))).sum(axis=1)
 
         return res
