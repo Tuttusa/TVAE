@@ -295,9 +295,10 @@ class TVAE:
 
         self.org_gn = None
 
-        self.model_path = path
         if path is None:
             self.model_path = models_path.joinpath(self.name)
+        else:
+            self.model_path = path.joinpath(self.name)
 
     def train(self):
         self.learn.fit_flat_cos(self.config.epochs, lr=self.config.lr)
