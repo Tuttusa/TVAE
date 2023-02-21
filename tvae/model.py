@@ -544,11 +544,12 @@ class TVAE:
         return df_dec, outs_enc
 
     def vae_uncert(self, outs_enc):
-        org_gn = torch.exp(Normal(torch.from_numpy(outs_enc.mean(axis=0)),
-                                  torch.from_numpy(outs_enc.std(axis=0))).
+        org_gn = self.encode(self.df)[0]
+        res = torch.exp(Normal(torch.from_numpy(org_gn.mean(axis=0)),
+                                  torch.from_numpy(org_gn.std(axis=0))).
                            log_prob(torch.from_numpy(outs_enc))).sum(axis=1)
 
-        return org_gn
+        return res
 
     def save(self):
         # save model
