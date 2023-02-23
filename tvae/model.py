@@ -514,7 +514,7 @@ class TVAE:
             outs_enc = self.learn.model.encode(cats, conts)[0].cpu().numpy()
         return outs_enc, dl, cats, conts
 
-    def decode(self, outs_enc, tranform=False):
+    def decode(self, outs_enc, transform=False):
         with torch.no_grad():
             self.learn.model.eval()
             if isinstance(outs_enc, np.ndarray):
@@ -524,7 +524,7 @@ class TVAE:
             df_dec = self._recon_df(
                 outs_dec_conts.cpu().numpy(), outs_dec_cats.cpu().numpy())
             
-            if tranform:
+            if transform:
                 df_dec, _, _ = self._transform(df_dec)
             
         return df_dec
