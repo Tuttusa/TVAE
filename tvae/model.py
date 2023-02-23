@@ -84,7 +84,7 @@ class TabDataLoaderIdentity(TabDataLoader):
     def __init__(self, dataset, bs=16, shuffle=False, after_batch=None, num_workers=0, **kwargs):
         if after_batch is None:
             after_batch = L(TransformBlock().batch_tfms) + \
-                ReadTabBatchIdentity(dataset)
+                          ReadTabBatchIdentity(dataset)
         super().__init__(dataset, bs=bs, shuffle=shuffle,
                          after_batch=after_batch, num_workers=num_workers, **kwargs)
 
@@ -210,16 +210,16 @@ class Reducer:
         default_reducer_args = {'n_components': 2, 'n_neighbors': None, 'MN_ratio': 0.5, 'FP_ratio': 2.0,
                                 'save_tree': True, 'num_iters': 1, 'verbose': True}
         default_reducer_args.update(reducer_args)
-        
+
         self.reducer = pacmap.PaCMAP(**default_reducer_args)
         self.reducer.fit(xenc)
 
     def process(self, xenc, num_iter=10):
         emb = self.reducer.transform(xenc)
         return emb
-    
+
     def plot(xenc: np.array, columns=None):
-        
+
         df_emb = df.copy()
         df_emb[['x', 'y']] = xenc
 
@@ -232,7 +232,6 @@ class Reducer:
             sns.scatterplot(data=df_emb, x='x', y='y')
 
             plt.show()
-
 
     def save(self, path):
         if self.reducer is not None:
@@ -494,7 +493,7 @@ class TVAE:
         return res
 
     def _transform(self, df):
-        "reconstruct a dataframe comming from the decoder to a real dataframe"
+        "encode and scale dataframe values"
         dl = self.learn.dls.test_dl(df)
         x_cats = torch.cat(list(map(lambda x: x[0], dl)))
         x_conts = torch.cat(list(map(lambda x: x[1], dl)))
@@ -502,8 +501,13 @@ class TVAE:
         x_conts = self._to_continuous_dataframe(x_conts)
         df_d = pd.concat(
             [pd.DataFrame(x_cats, columns=self.to.cat_names), x_conts], axis=1)
+        self.to.new(df).decode().xs
 
         return df_d, x_cats, x_conts
+
+    def _inverse_transform(self, df):
+        "decode and rescale dataframe to original values"
+        return self.to.new(df).decode().xs
 
     def encode(self, df):
         with torch.no_grad():
@@ -514,7 +518,7 @@ class TVAE:
             outs_enc = self.learn.model.encode(cats, conts)[0].cpu().numpy()
         return outs_enc, dl, cats, conts
 
-    def decode(self, outs_enc, transform=False):
+    def decode(self, outs_enc, inverse_transform=False):
         with torch.no_grad():
             self.learn.model.eval()
             if isinstance(outs_enc, np.ndarray):
@@ -523,18 +527,16 @@ class TVAE:
                 outs_enc.float())
             df_dec = self._recon_df(
                 outs_dec_conts.cpu().numpy(), outs_dec_cats.cpu().numpy())
-            
-            if transform:
-                df_dec, _, _ = self._transform(df_dec)
-            
+
+            if inverse_transform:
+                df_dec = self._inverse_transform(df_dec)
+
         return df_dec
 
-    def reconstruct(self, df, transform=True):
+    def reconstruct(self, df, inverse_transform=True):
         with torch.no_grad():
             outs_enc, dl, cats, conts = self.encode(df)
-            df_dec = self.decode(outs_enc, transform=False)
-            if transform:
-                df_dec, cats, conts = self._transform(df_dec)
+            df_dec = self.decode(outs_enc, inverse_transform=inverse_transform)
 
         return df_dec, cats, conts, dl, outs_enc
 
@@ -553,8 +555,8 @@ class TVAE:
         if self.org_gn is None:
             self.org_gn = self.encode(self.data_config.df)[0]
         res = torch.exp(Normal(torch.from_numpy(self.org_gn.mean(axis=0)),
-                                  torch.from_numpy(self.org_gn.std(axis=0))).
-                           log_prob(torch.from_numpy(outs_enc))).sum(axis=1)
+                               torch.from_numpy(self.org_gn.std(axis=0))).
+                        log_prob(torch.from_numpy(outs_enc))).sum(axis=1)
 
         return res
 
