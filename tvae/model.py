@@ -7,7 +7,6 @@ import pathlib
 import numpy as np
 import hashlib
 
-from optuna import Study
 from scipy.stats import entropy
 from sklearn.metrics import r2_score
 from fastai.callback.schedule import combine_scheds, SchedCos, SchedNo, ParamScheduler
@@ -515,7 +514,7 @@ class TVAE:
             outs_enc = self.learn.model.encode(cats, conts)[0].cpu().numpy()
         return outs_enc, dl, cats, conts
 
-    def decode(self, outs_enc):
+    def decode(self, outs_enc, tranform=False):
         with torch.no_grad():
             self.learn.model.eval()
             if isinstance(outs_enc, np.ndarray):
@@ -524,12 +523,16 @@ class TVAE:
                 outs_enc.float())
             df_dec = self._recon_df(
                 outs_dec_conts.cpu().numpy(), outs_dec_cats.cpu().numpy())
+            
+            if tranform:
+                df_dec, _, _ = self._transform(df_dec)
+            
         return df_dec
 
     def reconstruct(self, df, transform=True):
         with torch.no_grad():
             outs_enc, dl, cats, conts = self.encode(df)
-            df_dec = self.decode(outs_enc)
+            df_dec = self.decode(outs_enc, transform=False)
             if transform:
                 df_dec, cats, conts = self._transform(df_dec)
 
