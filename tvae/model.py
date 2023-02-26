@@ -382,26 +382,16 @@ class TVAE:
         return gg
 
     def _evaluate_recon_pref(self):
-        df_dec, cats, conts, dl, outs_enc = self.reconstruct(
-            self.data_config.df)
 
-        conts = self._to_continuous_dataframe(conts)
-        df_d = pd.concat(
-            [pd.DataFrame(cats, columns=self.to.cat_names), conts], axis=1)
-        df_dec.columns = list(map(lambda x: f"{x}_rec", df_dec.columns))
+        dl = self.learn.dls.test_dl(self.data_config.df)
+        (cat_preds, cont_preds, mu, logvar), (cat_targs, cont_targs) = self.learn.get_preds(dl=dl)
 
-        comp_df = pd.concat([df_d, df_dec], axis=1)
-        comp_df_l = sum(
-            list(map(list, zip(df_d.columns.tolist(), df_dec.columns.tolist()))), [])
-        comp_df = comp_df[comp_df_l]
-
-        (cat_preds, cont_preds, mu, logvar), (cat_targs,
-                                              cont_targs) = self.learn.get_preds(dl=dl)
+        df_dec = self._recon_df(cont_preds, cat_preds)
 
         cont_perf_data = self._continuous_performance(cont_preds, cont_targs)
         cat_perf_data = self._categorical_performance(cat_targs, cat_preds)
 
-        return comp_df, cont_perf_data, cat_perf_data
+        return df_dec, cont_perf_data, cat_perf_data
         # df_dec
 
     def _analyse_entropy(self, synth_df, real_df):
@@ -448,12 +438,8 @@ class TVAE:
         comp_entr, real_df_entr, synth_df_entr, value_count_comp = self._analyse_entropy(
             synth_df, real_df)
 
-        t_alea_unc = self._get_pvalue_uncertainty(
+        total_alea_unc = self._get_pvalue_uncertainty(
             real_df, synth_df, use_encoder=True)
-        x_alea_unc = self._get_pvalue_uncertainty(
-            real_df, synth_df, use_encoder=True)
-
-        total_alea_unc = (x_alea_unc.numpy(), t_alea_unc.numpy())
 
         return new_uniq, comp_entr, total_alea_unc, value_count_comp, real_df_entr, synth_df_entr
 
@@ -495,19 +481,18 @@ class TVAE:
     def _transform(self, df):
         "encode and scale dataframe values"
         dl = self.learn.dls.test_dl(df)
-        x_cats = torch.cat(list(map(lambda x: x[0], dl)))
-        x_conts = torch.cat(list(map(lambda x: x[1], dl)))
+        x_cats = torch.cat(list(map(lambda x: x[0], dl))).cpu().numpy()
+        x_conts = torch.cat(list(map(lambda x: x[1], dl))).cpu().numpy()
 
-        x_conts = self._to_continuous_dataframe(x_conts)
-        df_d = pd.concat(
-            [pd.DataFrame(x_cats, columns=self.to.cat_names), x_conts], axis=1)
-        self.to.new(df).decode().xs
+        df_d = pd.DataFrame(np.concatenate([x_cats, x_conts], axis=1),
+                            columns=self.data_config.cat_names + self.data_config.cont_names)
 
         return df_d, x_cats, x_conts
 
     def _inverse_transform(self, df):
         "decode and rescale dataframe to original values"
-        return self.to.new(df).decode().xs
+        df[self.data_config.cat_names] = self.to.new(df).decode().xs[self.data_config.cat_names]
+        return df
 
     def encode(self, df):
         with torch.no_grad():
